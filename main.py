@@ -1,12 +1,10 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Literal
 from openai import OpenAI
 import os
-from dotenv import load_dotenv  
 
-load_dotenv()
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -17,7 +15,7 @@ client = OpenAI(api_key=OPENAI_API_KEY)
 app = FastAPI(
     title="SMP Assistant API",
     description="Backend de recomendaciones personalizadas (IA) para la app SMP",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 app.add_middleware(
@@ -27,6 +25,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 class MealItem(BaseModel):
     mealType: str
@@ -41,12 +40,12 @@ class MealItem(BaseModel):
     gl: float
     portion_text: str
 
-
 class DaySummary(BaseModel):
     baseGoal: int
     consumed: int
     remaining: int
     smpCurrent: int
+
 
 
 class SuggestionRequest(BaseModel):
@@ -55,63 +54,141 @@ class SuggestionRequest(BaseModel):
     profile: str
     user_message: Optional[str] = None
 
-
 class SuggestionResponse(BaseModel):
     suggestion: str
+
+
+
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+class ChatRequest(BaseModel):
+    summary: DaySummary
+    meals: List[MealItem]
+    profile: str
+    messages: List[ChatMessage]
+
+class ChatResponse(BaseModel):
+    reply: str
+
+
+
+def build_meal_context(meals: List[MealItem]):
+    from collections import defaultdict
+    meals_by_type = defaultdict(list)
+
+    for m in meals:
+        meals_by_type[m.mealType].append(m)
+
+    blocks = []
+    for meal_type, items in meals_by_type.items():
+        lines = [
+            f"  - {i.name} ({i.grams} g, {i.kcal} kcal, IG {i.ig}, GL {i.gl}, "
+            f"carbs {i.carbs_g} g, fibra {i.fiber_g} g, prot {i.protein_g} g)"
+            for i in items
+        ]
+        blocks.append(meal_type.capitalize() + ":\n" + "\n".join(lines))
+
+    return "\n\n".join(blocks) if blocks else "No hay comidas registradas."
+
 
 
 @app.post("/ai/suggestions", response_model=SuggestionResponse)
 async def get_suggestions(body: SuggestionRequest):
 
-    meals_by_type = {}
-    for m in body.meals:
-        meals_by_type.setdefault(m.mealType, []).append(m)
-
-    comidas_str_parts = []
-    for meal_type, items in meals_by_type.items():
-        block = meal_type.capitalize() + ":\n" + "\n".join([
-            f"  - {it.name} ({it.grams} g, {it.kcal} kcal, IG {it.ig}, GL {it.gl}, "
-            f"carbs {it.carbs_g} g, fibra {it.fiber_g} g, prot {it.protein_g} g)"
-            for it in items
-        ])
-        comidas_str_parts.append(block)
-
-    comidas_str = "\n\n".join(comidas_str_parts) if comidas_str_parts else "No hay comidas registradas."
-
-    user_msg = body.user_message or "Dame una recomendación personalizada."
+    comidas_str = build_meal_context(body.meals)
+    user_msg = body.user_message or "Dame una recomendación para mejorar mi salud metabólica hoy."
 
     prompt = f"""
-Perfil del usuario:
-{body.profile}
+Eres un experto en salud metabólica.
+Da UNA sola recomendación práctica para hoy.
 
-Resumen del día:
-- Meta: {body.summary.baseGoal} kcal
-- Consumidas: {body.summary.consumed}
-- Restantes: {body.summary.remaining}
-- SMP: {body.summary.smpCurrent}
+Meta: {body.summary.baseGoal} kcal
+Consumido: {body.summary.consumed}
+Restantes: {body.summary.remaining}
+SMP actual: {body.summary.smpCurrent}
 
 Comidas:
 {comidas_str}
 
-Mensaje del usuario:
-{user_msg}
+Usuario dijo:
+\"\"\"{user_msg}\"\"\"
+"""
 
- DA UNA SOLA RECOMENDACIÓN clara, útil, breve (máximo 2 líneas) y aplicable hoy.
+    completion = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.6,
+    )
+
+    return SuggestionResponse(
+        suggestion=completion.choices[0].message.content.strip()
+    )
+
+
+@app.post("/ai/chat", response_model=ChatResponse)
+async def chat_with_bot(body: ChatRequest):
+
+    comidas_str = build_meal_context(body.meals)
+
+    history_str = ""
+    for msg in body.messages:
+        speaker = "Usuario" if msg.role == "user" else "Coach"
+        history_str += f"{speaker}: {msg.content}\n"
+
+    last_user_message = next(
+        (m.content for m in reversed(body.messages) if m.role == "user"),
+        "Necesito ayuda para mejorar hoy."
+    )
+
+    system_prompt = """
+Eres un nutricionista y coach especializado en salud metabólica y resistencia a la insulina.
+Reglas:
+- Sé amable, motivador, práctico.
+- Máximo 3-4 frases por respuesta.
+- Usa el contexto metabólico para dar consejos útiles.
+- No hagas diagnósticos médicos.
+"""
+
+    user_prompt = f"""
+Contexto metabólico del usuario:
+
+Meta kcal: {body.summary.baseGoal}
+Consumidas: {body.summary.consumed}
+Restantes: {body.summary.remaining}
+SMP actual: {body.summary.smpCurrent}/100
+
+Perfil:
+{body.profile}
+
+Comidas del día:
+{comidas_str}
+
+Conversación previa:
+{history_str}
+
+Última duda del usuario:
+\"\"\"{last_user_message}\"\"\"
+
+Da la mejor respuesta posible.
 """
 
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "Eres un coach de salud metabólica conciso y muy práctico."},
-            {"role": "user", "content": prompt},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
         temperature=0.65,
     )
 
-    text = completion.choices[0].message.content.strip()
-    return SuggestionResponse(suggestion=text)
+    return ChatResponse(
+        reply=completion.choices[0].message.content.strip()
+    )
+
 
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "SMP Assistant API funcionando "}
+    return {"status": "ok", "message": "SMP Assistant API funcionando 🔥"}
