@@ -191,4 +191,4 @@ Da la mejor respuesta posible.
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "SMP Assistant API funcionando 🔥"}
+    return {"status": "ok", "message": "SMP Assistant API funcionando"}
