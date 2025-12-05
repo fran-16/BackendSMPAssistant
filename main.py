@@ -93,7 +93,6 @@ def build_meal_context(meals: List[MealItem]):
     return "\n\n".join(blocks) if blocks else "No hay comidas registradas."
 
 
-
 @app.post("/ai/suggestions", response_model=SuggestionResponse)
 async def get_suggestions(body: SuggestionRequest):
 
@@ -101,19 +100,25 @@ async def get_suggestions(body: SuggestionRequest):
     user_msg = body.user_message or "Dame una recomendación para mejorar mi salud metabólica hoy."
 
     prompt = f"""
-Eres un experto en salud metabólica.
-Da UNA sola recomendación práctica para hoy.
+Eres un experto en salud metabólica y nutrición personalizada.
+Ten muy en cuenta las enfermedades y las restricciones alimentarias del usuario.
 
+PERFIL DEL USUARIO:
+{body.profile}
+
+OBJETIVO DEL DÍA:
 Meta: {body.summary.baseGoal} kcal
 Consumido: {body.summary.consumed}
 Restantes: {body.summary.remaining}
 SMP actual: {body.summary.smpCurrent}
 
-Comidas:
+COMIDAS DEL DÍA:
 {comidas_str}
 
-Usuario dijo:
+MENSAJE DEL USUARIO:
 \"\"\"{user_msg}\"\"\"
+
+Da UNA sola recomendación clara, segura y personalizada para hoy.
 """
 
     completion = client.chat.completions.create(
@@ -192,3 +197,4 @@ Da la mejor respuesta posible.
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "SMP Assistant API funcionando"}
+
