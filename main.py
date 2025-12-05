@@ -106,6 +106,7 @@ Ten muy en cuenta las enfermedades y las restricciones alimentarias del usuario.
 PERFIL DEL USUARIO:
 {body.profile}
 
+
 OBJETIVO DEL DÍA:
 Meta: {body.summary.baseGoal} kcal
 Consumido: {body.summary.consumed}
